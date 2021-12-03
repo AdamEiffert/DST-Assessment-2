@@ -39,3 +39,4 @@ vignettes/*.pdf
 .Renviron
 
 *.csv
+report/.ipynb_checkpoints/Snort pre-processing-checkpoint.ipynb
