@@ -142,12 +142,17 @@ random_sample1 = merge(random_sample1,random_sample,by.x='id',by.y = 'id') [,- 1
 random_sample1 = random_sample1[,-c('proto','service','conn_state','history','atcktype')]
 ```
 
-Here we set all the Nas to 0.
+Here we set all the Nas to 0 and change the malcious column to mal which uses 1 to represent malicous == TRUE and 0 otherwise. These are for xgboost to work.
 ```{r}
+random_sample1$ts = as.numeric(random_sample1$ts)
 random_sample1$duration[is.na(random_sample1$duration)] = 0
 random_sample1$orig_bytes[is.na(random_sample1$orig_bytes)] = 0
 random_sample1$resp_bytes[is.na(random_sample1$resp_bytes)] = 0
+random_sample1$mal[random_sample1$malicious] = 1
+random_sample1$malicious = NULL
 ```
 
-
+```{r}
+write.csv(random_sample1,'../data/processed/labelled1.csv')
+```
 https://doi.org/10.25394/PGS.11307287.v1
