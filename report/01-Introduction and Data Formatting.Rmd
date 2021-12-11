@@ -139,10 +139,10 @@ We then merged the one-hot encoding with the main sample table.
 random_sample$id = 1:nrow(random_sample)
 random_sample1$id = 1:nrow(random_sample1)
 random_sample1 = merge(random_sample1,random_sample,by.x='id',by.y = 'id') [,- 1]
-random_sample1 = random_sample1[,-c('proto','service','conn_state','history','atcktype')]
+random_sample1 = random_sample1[,-c('proto','service','conn_state','history')]
 ```
 
-Here we set all the Nas to 0 and change the malcious column to mal which uses 1 to represent malicous == TRUE and 0 otherwise. These are for xgboost to work.
+Here we set all the Nas to 0 and change the malicious column to mal which uses 1 to represent malicious == TRUE and 0 otherwise. These are for xgboost to work.
 ```{r}
 random_sample1$ts = as.numeric(random_sample1$ts)
 random_sample1$duration[is.na(random_sample1$duration)] = 0
@@ -150,6 +150,10 @@ random_sample1$orig_bytes[is.na(random_sample1$orig_bytes)] = 0
 random_sample1$resp_bytes[is.na(random_sample1$resp_bytes)] = 0
 random_sample1$mal[random_sample1$malicious] = 1
 random_sample1$malicious = NULL
+```
+
+```{r}
+random_sample1[1]
 ```
 
 ```{r}
