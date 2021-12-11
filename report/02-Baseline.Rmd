@@ -1,0 +1,51 @@
+---
+title: "02-Baseline"
+output: html_document
+---
+
+
+## Baseline 
+```{r}
+library("data.table")
+library("caret")
+if (!require("randomForest")) install.packages("randomForest")
+library("randomForest")
+library("R.utils")
+```
+
+```{r}
+set.seed(63)
+df <- fread('../data/processed/labelled2.csv')[,- 1] # download from google drive when confident in csv
+```
+
+```{r}
+atck={}
+for (i in 1:length(df)){
+  if (!startsWith(colnames(df)[i],'atcktype')){
+     atck <- c(atck,i)
+  }
+}
+```
+
+```{r}
+df <- subset(df,select = c(atck))
+sample <- createDataPartition(df$mal, p = 0.7, list = FALSE)
+train <- df[sample,]
+test <- df[-sample]
+model <- randomForest(train[,- 'mal'], unlist(train[,'mal']))
+print(model)
+```
+
+
+```{r}
+typeof(unlist(df[,'mal']))
+```
+
+
+
+
+
+
+
+
+
