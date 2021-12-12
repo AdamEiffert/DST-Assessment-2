@@ -112,7 +112,7 @@ random_sample1 = fread('../data/processed/labelled.csv', colClasses=list(charact
 
 We now look at each column to see if their typing is correct and if the column can be removed because they either do not have value for the analysis (uid) or only have one value (local_orig).
 ```{r}
-random_sample1 <- random_sample1[, ':=' (uid=NULL,duration=as.numeric(duration),orig_bytes=as.numeric(orig_bytes),resp_bytes=as.numeric(resp_bytes),local_orig=NULL,tunnel_parents=NULL)]
+random_sample1 <- random_sample1[, ':=' (uid=NULL,duration=as.numeric(duration),orig_bytes=as.numeric(orig_bytes),resp_bytes=as.numeric(resp_bytes),local_orig=NULL,tunnel_parents=NULL,atcktype=NULL)]
 ```
 We now check for the categorical variable, which are those with type of character but are not the columns ts, srcIP and dstIP. Ideally, we would have wanted to one-hot encode the IP addresses as well, however this makes the table too big to store in R so we chose a different method, which will be seen later.
 ```{r}
