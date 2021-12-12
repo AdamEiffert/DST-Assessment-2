@@ -19,26 +19,14 @@ df <- fread('../data/processed/labelled2.csv')[,- 1] # download from google driv
 ```
 
 ```{r}
-atck={}
-for (i in 1:length(df)){
-  if (!startsWith(colnames(df)[i],'atcktype')){
-     atck <- c(atck,i)
-  }
-}
-```
-
-```{r}
 df <- subset(df,select = c(atck))
 sample <- createDataPartition(df$mal, p = 0.7, list = FALSE)
 train <- df[sample,]
-test <- df[-sample]
+test <- df[-sample,]
 model <- randomForest(train[,- 'mal'], unlist(train[,'mal']))
-print(model)
 ```
-
-
 ```{r}
-typeof(unlist(df[,'mal']))
+
 ```
 
 
