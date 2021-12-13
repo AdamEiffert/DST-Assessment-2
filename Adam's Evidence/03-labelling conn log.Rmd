@@ -1,0 +1,46 @@
+---
+title: "03-labelling conn.log"
+output: html_document
+---
+# Labelling conn.log
+
+In this file we use the snort log entries extracted from the previous file to label any matching conn.log entries as malicious with the corresponding attack types.
+
+###Load libraries 
+```{r}
+if (!require("data.table")) install.packages("data.table")
+library("data.table")
+```
+
+###Import data
+Here we import the conn.log file and the extracted information from the snort logs.
+```{r}
+conn <- fread('../data/raw/conn.log', colClasses=list(character=1))
+names(conn) = c("ts","uid","srcIP","srcPort","dstIP","dstPort","proto","service","duration","orig_bytes","resp_bytes","conn_state","local_orig","missed_bytes","history","orig_pkts","orig_ip_bytes","resp_pkts","resp_ip_bytes","tunnel_parents")
+snort <- fread('../data/processed/snort.csv', colClasses=c("ts"="character"))
+```
+
+### Matching snort to conn
+First, we select a random sample of 200,000 data points. This was limited by the time taken to label the data using the snort logs. The original plan was to label all of the conn.log data, however this was unfeasible time-wise even with multiple optimisations in place. So we decided that 200,000 entries was a good balance between taking several hours to run but providing us with enough labelled data that we can use for training and testing on.
+
+```{r}
+set.seed(56)
+random_sample1 <- conn[sample(1:nrow(conn),200000),]
+```
+
+Now for each of the snort log entries, we check to see if any entries in our random sample match, in which case they are labelled at malicious and their attack type is noted. Here we used the criteria of time, src and dst IP addresses and (if available) src and dst Ports. As the data was unordered this method was easy code that worked efficiently enough for what we needed. For possible other approaches and comments on their evaluations see /Adam's Evidence/Data Formatting.Rmd. The block method would not be possible here due to the conn.log data being randomly distributed.
+
+```{r}
+for (j in c(1:nrow(snort))){
+  if (snort$Port[j]){
+    random_sample1[random_sample1$ts == snort$ts[j] & random_sample1$srcIP == snort$srcIP[j] & random_sample1$dstIP == snort$dstIP[j] & random_sample1$srcPort == snort$srcPort[j] & random_sample1$dstPort == snort$dstPort[j], ':=' ('malicious'=TRUE,'atcktype'=snort$type[j])]
+  }else{
+    random_sample1[random_sample1$ts == snort$ts[j] & random_sample1$srcIP == snort$srcIP[j] & random_sample1$dstIP == snort$dstIP[j],':=' ('malicious'=TRUE,'atcktype'=snort$type[j])]
+  }
+}
+```
+
+We now save this random sample to a file.
+```{r}
+write.csv(random_sample1,'../data/processed/labelled.csv')
+```
