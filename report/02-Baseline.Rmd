@@ -1,0 +1,49 @@
+---
+title: "02-Baseline"
+output: html_document
+---
+
+
+## Baseline 
+```{r}
+library("data.table")
+library("caret")
+if (!require("randomForest")) install.packages("randomForest")
+library("randomForest")
+library("R.utils")
+if (!require("mltools")) install.packages("mltools")
+library("mltools")
+if (!require("PRROC")) install.packages("PRROC")
+library("PRROC")
+```
+
+```{r}
+set.seed(63)
+df <- fread('../data/processed/labelled2.csv')[,- 1] # download from google drive when confident in csv
+```
+
+```{r}
+sample <- createDataPartition(df$mal, p = 0.7, list = FALSE)
+train <- df[sample,]
+test <- df[-sample,]
+model <- randomForest(train[,- 'mal'], unlist(train[,'mal']))
+```
+
+```{r}
+prediction <- predict(model,test[,-'mal'])
+prediction[prediction < 0.5] = 0
+prediction[prediction > 0.5] = 1
+```
+
+
+```{r}
+png('../data/processed/RF_ROC.png')
+PRROC_obj <- roc.curve(scores.class0 = prediction, weights.class0=test$mal,curve=TRUE)
+plot(PRROC_obj)
+dev.off()
+mcc(prediction, test$mal)
+```
+
+
+
+
