@@ -1,0 +1,59 @@
+---
+title: "05-Baseline"
+output: html_document
+---
+
+# Baseline Model
+
+We have decided to use a default random forest model as our baseline model. Here we will train and test the model, however the comparison to the complex model is found in 06-Complex. 
+
+### Load Libraries
+```{r}
+if (!require("googledrive")) install.packages("googledrive")
+library("googledrive")
+library("data.table")
+library("caret")
+if (!require("randomForest")) install.packages("randomForest")
+library("randomForest")
+library("R.utils")
+if (!require("mltools")) install.packages("mltools")
+library("mltools")
+if (!require("PRROC")) install.packages("PRROC")
+library("PRROC")
+if (!require("bit64")) install.packages("bit64")
+library("bit64")
+```
+In case the previous code from the project has not been run, we have linked to a Google drive document to train the model.
+```{r}
+if (!file.exists('../data/processed/labelled_clean.csv')) {
+  drive_deauth()
+  drive_download(as_id("1xRCcAp6NjU8SD80nCYybKdU9jv2TgPgv"), path = "../data/processed/labelled_clean.csv", overwrite = TRUE)
+}
+set.seed(63)
+df <- fread('../data/processed/labelled_clean.csv')[,- 1] # download from google drive when confident in csv
+```
+
+Originally we planned to do a 10-fold over the training data, however each instance of randomForest took a couple of hours at a time and so it took too long to train. As such we trained using the 70%. A 70/30 training/testing split is quite commonly used as is provides a reasonable balance between being able to train an effective model while being able to test the model to a reasonable efficay. 
+```{r}
+sample <- createDataPartition(df$malicious, p = 0.7, list = FALSE)
+train <- df[sample,]
+test <- df[-sample,]
+model <- randomForest(train[,- 'malicious'], unlist(train[,'malicious']))
+```
+Now that we have trained the model, we can use it to predict the results of the test data. The predict function provides numeric values between 0 and 1 and so in order to make these categorical I have split the information at 0.5.
+
+```{r}
+prediction <- predict(model,test[,-'malicious'])
+prediction[prediction < 0.5] = 0
+prediction[prediction > 0.5] = 1
+```
+
+Here we can look at the ROC curve produced by the model as well as the area under the curve. This allows us to numerically compare the models as well as graphically to see if there are any unusual findings between the two models. We also export the plot so that it can be used in 06-complex for comparison to the complex model.
+
+```{r}
+png('../data/processed/RF_ROC.png')
+PRROC_obj <- roc.curve(scores.class0 = prediction, weights.class0=test$malicious,curve=TRUE)
+plot(PRROC_obj)
+dev.off()
+plot(PRROC_obj)
+```

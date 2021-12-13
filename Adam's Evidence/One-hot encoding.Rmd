@@ -1,0 +1,75 @@
+---
+title: "One-hot encoding"
+output: html_document
+---
+## Library requirements
+
+```{r}
+if (!require("R.utils")) install.packages("R.utils")
+library("R.utils")
+if (!require("data.table")) install.packages("data.table")
+library("data.table")
+if (!require("googledrive")) install.packages("googledrive")
+library("googledrive")
+if (!require("dplyr")) install.packages("dplyr")
+library("dplyr")
+if (!require("caret")) install.packages("caret")
+library(caret)
+if (!require("mltools")) install.packages("mltools")
+library(mltools)
+if (!require("mlr")) install.packages("mlr")
+library("mlr")
+if (!require("tidyr")) install.packages("tidyr")
+library("tidyr")
+if (!require("assertr")) install.packages("assert")
+library("assertr")
+```
+
+### One-hot encoding
+First, we read in the sample data, ignoring the indexing column.
+```{r}
+random_sample1 = fread('../data/processed/labelled.csv', colClasses=list(character=2))[,- 1]
+```
+
+We now look at each column to see if their typing is correct and if the column can be removed because they either do not have value for the analysis (uid) or only have one value (local_orig, tunnel_parents, missed_bytes). We removed atcktype because we did not have the time to be able to do any cross validation or testing using it, therefore it will not be needed for the rest of this project.
+
+```{r}
+random_sample1 <- random_sample1[, ':=' (uid=NULL,duration=as.numeric(duration),orig_bytes=as.numeric(orig_bytes),resp_bytes=as.numeric(resp_bytes),local_orig=NULL,tunnel_parents=NULL,missed_bytes=NULL,atcktype=NULL)]
+```
+
+We now check for the categorical variable, which are those with type of character but are not the columns ts, srcIP and dstIP. Ideally, we would have wanted to one-hot encode the IP addresses as well, however this makes the table too big to store in R so we chose a different method, which will be seen later.
+
+```{r}
+categ={}
+categoricals <- random_sample1[,sapply(.SD,is.character)]
+for (i in 1:length(categoricals)){
+  if (categoricals[i]){
+    categ <- c(categ,i)
+  }
+}
+#remove ts,srcIP,dstIP
+categ <- categ[- 1]
+categ <- categ[- 1]
+categ <- categ[- 1]
+```
+
+We now create a table with columns with the one-hot encoding of the categorical variables.
+```{r}
+dummy <- dummyVars(" ~ .",data=random_sample1[,.SD,.SDcols=c(categ)])
+random_sample <- data.table(predict(dummy,newdata = random_sample1[,.SD,.SDcols=c(categ)]))
+```
+
+We then merged the one-hot encoding with the main sample table.
+```{r}
+random_sample$id = 1:nrow(random_sample)
+random_sample1$id = 1:nrow(random_sample1)
+random_sample1 = merge(random_sample1,random_sample,by.x='id',by.y = 'id') [,- 1]
+random_sample1 = random_sample1[,-c('proto','service','conn_state','history','atcktype')]
+```
+
+Here we set all the Nas to 0.
+```{r}
+random_sample1$duration[is.na(random_sample1$duration)] = 0
+random_sample1$orig_bytes[is.na(random_sample1$orig_bytes)] = 0
+random_sample1$resp_bytes[is.na(random_sample1$resp_bytes)] = 0
+```

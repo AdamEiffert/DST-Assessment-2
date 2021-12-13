@@ -13,7 +13,7 @@ The brief was to:
 * Use a strategy to analyse performance
 * Compare the performance of the baseline to the complex model
 
-We decided that we would stick with a simple goal of classifying if a packet was malicious or not as we looked to do more work in other aspects of the project. We decided to use a ... model as our baseline model because ... . We chose to use K-fold cross validation as this is effective while being simple to use. We decided to use the metric of ... to analyse our models. 
+We decided that we would stick with a simple goal of classifying if a packet was malicious or not as we looked to do more work in other aspects of the project. We decided to use a random forest model as our baseline model because xgboost works in a similar way to random forests but generally performs better so we wanted to look at how much better it performed when the xgboost has tuned hyper parameters and a baseline random forest is used. We intended to use a 10-fold cross validation for the baseline model, however the model was taking too long to run and so we had to use a simple 70/30% training/testing split. We decided to use an ROC curve and AUC to analyse our models as this would give us to see if there were any points where the random forest was better than the xgboost. We also wanted to look more into how xgboost works and some ways that we can optimise its implementation.
 
 ## Library requirements
 
@@ -24,16 +24,6 @@ if (!require("data.table")) install.packages("data.table")
 library("data.table")
 if (!require("googledrive")) install.packages("googledrive")
 library("googledrive")
-if (!require("dplyr")) install.packages("dplyr")
-library("dplyr")
-if (!require("foreach")) install.packages("foreach")
-library(foreach)
-if (!require("doSNOW")) install.packages("doSNOW")
-library(doSNOW)
-if (!require("caret")) install.packages("caret")
-library(caret)
-if (!require("mltools")) install.packages("mltools")
-library(mltools)
 ```
 
 
@@ -41,7 +31,7 @@ library(mltools)
 
 We each started by searching out a dataset of connections along with a snort log of another dataset, of which the connections log was a subset. 
 
-To obtain this dataset in a convenient format, we will download it and, if necessary, process it into a standard form.
+To obtain this dataset in a convenient format, we will download it and, if necessary, process it into a standard form. Throughout various parts of our project we checkpointed our progress by saving files to the processed folder.
 
 We place data in the raw or processed folder depending on the stage of processing, both of which are in the `data` folder of our root. So our file system will look like this:
 
@@ -49,6 +39,8 @@ We place data in the raw or processed folder depending on the stage of processin
   * /data/processed
     * /data/processed/snort.csv
     * /data/processed/labelled.csv
+    * /data/processed/labelled1.csv
+    * /data/processed/labelled_clean.csv
   * /data/raw
     * /data/raw/conn.log
 
@@ -66,8 +58,6 @@ if (!file.exists('../data/raw/conn.log.gz') && !file.exists('../data/raw/conn.lo
   download.file('https://www.secrepo.com/maccdc2012/conn.log.gz', '../data/raw/conn.log.gz')
 }
 if (!file.exists('../data/raw/conn.log')) gunzip('../data/raw/conn.log.gz')
-conn <- fread('../data/raw/conn.log', colClasses=list(character=1))
-names(conn) = c("ts","uid","srcIP","srcPort","dstIP","dstPort","proto","service","duration","orig_bytes","resp_bytes","conn_state","local_orig","missed_bytes","history","orig_pkts","orig_ip_bytes","resp_pkts","resp_ip_bytes","tunnel_parents")
 ```
 
 ```{r}
@@ -75,79 +65,4 @@ if (!file.exists('../data/processed/snort.csv')) {
   drive_deauth()
   drive_download(as_id("1yx3enHgjRS234E6giO-88qSMoGiJndBo"), path = "../data/processed/snort.csv", overwrite = TRUE)
 }
-snort <- fread('../data/processed/snort.csv', colClasses=c("ts"="character"))
 ``` 
-
-### Matching snort to conn
-First, we select a random sample of 200,000 data points. This was limited by the time taken to label the data using the snort logs. The original plan was to label all of the conn.log data, however this was unfeasible time-wise even with multiple optimisations in place.
-```{r}
-set.seed(56)
-random_sample1 <- conn[sample(1:nrow(conn),200000),]
-```
-
-Now for each of the snort log entries, we check to see if any entries in our random sample match, in which case they are labelled at malicious and their attack type is noted. Here we used the criteria of time, src and dst IP addresses and (if available) src and dst Ports. 
-```{r}
-cl <- makeCluster(8, type="SOCK") # for 8 cores machine
-registerDoSNOW (cl)
-
-for (j in c(1:nrow(snort))){
-  if (snort$Port[j]){
-    random_sample1[random_sample1$ts == snort$ts[j] & random_sample1$srcIP == snort$srcIP[j] & random_sample1$dstIP == snort$dstIP[j] & random_sample1$srcPort == snort$srcPort[j] & random_sample1$dstPort == snort$dstPort[j], ':=' ('malicious'=TRUE,'atcktype'=snort$type[j])]
-  }else{
-    random_sample1[random_sample1$ts == snort$ts[j] & random_sample1$srcIP == snort$srcIP[j] & random_sample1$dstIP == snort$dstIP[j],':=' ('malicious'=TRUE,'atcktype'=snort$type[j])]
-  }
-}
-```
-We now save this random sample to a file.
-```{r}
-write.csv(random_sample1,'../data/processed/labelled.csv')
-```
-
-
-### One-hot encoding
-First, we read in the sample data, ignoring the indexing column.
-```{r}
-random_sample1 = fread('../data/processed/labelled.csv', colClasses=list(character=2))[,- 1]
-```
-
-We now look at each column to see if their typing is correct and if the column can be removed because they either do not have value for the analysis (uid) or only have one value (local_orig).
-```{r}
-random_sample1 <- random_sample1[, ':=' (uid=NULL,duration=as.numeric(duration),orig_bytes=as.numeric(orig_bytes),resp_bytes=as.numeric(resp_bytes),local_orig=NULL,tunnel_parents=NULL)]
-```
-We now check for the categorical variable, which are those with type of character but are not the columns ts, srcIP and dstIP. Ideally, we would have wanted to one-hot encode the IP addresses as well, however this makes the table too big to store in R so we chose a different method, which will be seen later.
-```{r}
-categ={}
-categoricals <- random_sample1[,sapply(.SD,is.character)]
-for (i in 1:length(categoricals)){
-  if (categoricals[i]){
-    categ <- c(categ,i)
-  }
-}
-categ <- categ[- 1]
-categ <- categ[- 1]
-categ <- categ[- 1]
-```
-
-We now create a table with columns with the one-hot encoding of the categorical variables.
-```{r}
-dummy <- dummyVars(" ~ .",data=random_sample1[,.SD,.SDcols=c(categ)])
-random_sample <- data.table(predict(dummy,newdata = random_sample1[,.SD,.SDcols=c(categ)]))
-```
-
-We then merged the one-hot encoding with the main sample table.
-```{r}
-random_sample$id = 1:nrow(random_sample)
-random_sample1$id = 1:nrow(random_sample1)
-random_sample1 = merge(random_sample1,random_sample,by.x='id',by.y = 'id') [,- 1]
-random_sample1 = random_sample1[,-c('proto','service','conn_state','history','atcktype')]
-```
-
-Here we set all the Nas to 0.
-```{r}
-random_sample1$duration[is.na(random_sample1$duration)] = 0
-random_sample1$orig_bytes[is.na(random_sample1$orig_bytes)] = 0
-random_sample1$resp_bytes[is.na(random_sample1$resp_bytes)] = 0
-```
-
-
-https://doi.org/10.25394/PGS.11307287.v1
