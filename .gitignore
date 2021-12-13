@@ -42,3 +42,4 @@ vignettes/*.pdf
 *.pcap
 /data/*
 
+report/.ipynb_checkpoints/Snort pre-processing-checkpoint.ipynb
