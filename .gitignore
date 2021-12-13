@@ -43,3 +43,4 @@ vignettes/*.pdf
 /data/*
 
 report/.ipynb_checkpoints/Snort pre-processing-checkpoint.ipynb
+report/.ipynb_checkpoints/02-Snort pre-processing-checkpoint.ipynb
