@@ -35,7 +35,7 @@ set.seed(63)
 df <- fread('../data/processed/labelled_clean.csv')[,- 1] # download from google drive when confident in csv
 ```
 
-Originally we planned to do a 10-fold over the training data, however each instance of randomForest took a couple of hours at a time and so it took too long to train. As such we trained using the 70%. A 70/30 training/testing split is quite commonly used as is provides a reasonable balance between being able to train an effective model while being able to test the model to a reasonable efficay. 
+Originally we planned to do a 10-fold over the training data, however each instance of randomForest took a couple of hours at a time and so it took too long to train. As such we trained using the 70%. A 70/30 training/testing split is quite commonly used as is provides a reasonable balance between being able to train an effective model while being able to test the model to a reasonable efficacy. 
 ```{r}
 sample <- createDataPartition(df$malicious, p = 0.7, list = FALSE)
 train <- df[sample,]
