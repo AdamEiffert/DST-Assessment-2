@@ -4,7 +4,7 @@ output: html_document
 ---
 ## Library requirements
 
-```{r}
+```{r results='hide',message=FALSE}
 if (!require("R.utils")) install.packages("R.utils")
 library("R.utils")
 if (!require("data.table")) install.packages("data.table")
@@ -13,6 +13,10 @@ if (!require("googledrive")) install.packages("googledrive")
 library("googledrive")
 if (!require("dplyr")) install.packages("dplyr")
 library("dplyr")
+if (!require("foreach")) install.packages("foreach")
+library(foreach)
+if (!require("doSNOW")) install.packages("doSNOW")
+library(doSNOW)
 if (!require("caret")) install.packages("caret")
 library(caret)
 if (!require("mltools")) install.packages("mltools")
@@ -31,15 +35,13 @@ First, we read in the sample data, ignoring the indexing column.
 random_sample1 = fread('../data/processed/labelled.csv', colClasses=list(character=2))[,- 1]
 ```
 
-We now look at each column to see if their typing is correct and if the column can be removed because they either do not have value for the analysis (uid) or only have one value (local_orig, tunnel_parents, missed_bytes). We removed atcktype because we did not have the time to be able to do any cross validation or testing using it, therefore it will not be needed for the rest of this project.
-
+We now look at each column to see if their typing is correct and if the column can be removed because they either do not have value for the analysis (uid) or only have one value (local_orig).
 ```{r}
-random_sample1 <- random_sample1[, ':=' (uid=NULL,duration=as.numeric(duration),orig_bytes=as.numeric(orig_bytes),resp_bytes=as.numeric(resp_bytes),local_orig=NULL,tunnel_parents=NULL,missed_bytes=NULL,atcktype=NULL)]
+random_sample1 <- random_sample1[, ':=' (uid=NULL,duration=as.numeric(duration),orig_bytes=as.numeric(orig_bytes),resp_bytes=as.numeric(resp_bytes),local_orig=NULL,tunnel_parents=NULL,missed_bytes=NULL)]
 ```
-
 We now check for the categorical variable, which are those with type of character but are not the columns ts, srcIP and dstIP. Ideally, we would have wanted to one-hot encode the IP addresses as well, however this makes the table too big to store in R so we chose a different method, which will be seen later.
-
 ```{r}
+
 categ={}
 categoricals <- random_sample1[,sapply(.SD,is.character)]
 for (i in 1:length(categoricals)){
@@ -47,6 +49,9 @@ for (i in 1:length(categoricals)){
     categ <- c(categ,i)
   }
 }
+categ
+#we remove atcktype
+categ <- categ[-length(categ)]
 #remove ts,srcIP,dstIP
 categ <- categ[- 1]
 categ <- categ[- 1]
@@ -73,6 +78,8 @@ random_sample1$duration[is.na(random_sample1$duration)] = 0
 random_sample1$orig_bytes[is.na(random_sample1$orig_bytes)] = 0
 random_sample1$resp_bytes[is.na(random_sample1$resp_bytes)] = 0
 ```
+
+---the above is just copied from the one-hot encoding in the previous section for the sake of consistency/continuity---
 
 ## IP Encoding
 As mentioned above, we take a different approach to encoding the IP addresses instead of one-hot encoding. Having explored the following paper, https://doi.org/10.25394/PGS.11307287.v1 , we follow the binary encoding method suggested in the paper. Ideally, we would have followed the seemingly better performing split method wherein we split IPv4 addresses into 4 separate features e.g. 'IP': 192.168.202.24 would be split to features 'IP1':192 , 'IP2': 168 , ... and so on. However, the presence of IPv6 addresses in our dataset is problematic for this approach and so we instead use the binary split method highlighted below.
@@ -123,11 +130,11 @@ For somewhat better readability of src_double_colon's form. Uncomment if you wan
 #   print(strsplit(i,'::'))
 # }
 ```
+
 For the short-hand IPv6 addresses found in srcIP, it looks like the form followed is either exactly '::' or 'fe80::ak:a(k+1):...:a8' where the value of k seems to vary. 
 
 
 We now repeat the process for dstIP and see if there is any difference in the form of the IPv6 addresses.
-
 ```{r}
 dst_ipv6<-vector()
 
@@ -158,9 +165,8 @@ Again, for somewhat better readability of dst_double_colon's form. Uncomment to 
 #   print(strsplit(i,'::'))
 # }
 ```
+
 For the dstIPs we have the same case of '::' and 'fe80::x' as before, but we also have a new form of '2001:a2:a3:a4::a8' where obviously a5==a6==a7==0000. We thus create a function to format all IPs as below.
-
-
 ```{r}
 cleanIP <- function(ip) {
   ip<-as.character(ip)
@@ -214,12 +220,13 @@ test_ip<-data.table(ip_df)
 #length of dataset
 L = length(test_ip[,dstIP])
 ```
+
 We now create a vector of indices for where IPv6 addresses appear
 ```{r}
 src_ind = vector()
 ```
-We initially did a separate list for dst_ind but then realised the indices are exactly the same so we just kept src_ind and got rid of `dst_ind = vector()` to reduce compute time.
 
+We initially did a separate list for dst_ind but then realised the indices are exactly the same so we just kept src_ind and got rid of `dst_ind = vector()` to reduce compute time.
 ```{r}
 #progress bar
 pb = txtProgressBar(min = 0, max = L, initial = 0)
@@ -251,7 +258,7 @@ for (i in 1:L){
 }
 ```
 
-#quick check to see if values have changed in test_ip[,srcIP] or not
+Quick check to see if values have changed in test_ip[,srcIP] or not
 ```{r}
 suip = unique(test_ip[,srcIP])
 duip = unique(test_ip[,dstIP])
@@ -276,12 +283,10 @@ for (ip in duip){
   }
 }
 ```
-#everything looks like it works fine
-
-#we create a function that takes the 4 elements of ipv4 e.g. 
-#ip_1=192, ip_2 = 168, ip_3=202, ip_4=24
-#then each of those is converted to 8-bit binary and the 32 digits are then concatenated
-#the same is done for ipv6 using 16-bit binary
+Everything looks like it works fine. To summarise the method that we have been following and will be applying below:
+ - we create a function that takes the 4 elements of ipv4 e.g. ip_1=192, ip_2 = 168, ip_3=202, ip_4=24
+ - then each of those is converted to 8-bit binary and the 32 digits are then concatenated
+ - the same is done for ipv6 using 16-bit binary
 
 ```{r}
 IPBinary <- function(vector=test_ip[,'srcIP'],vec_ind=src_ind) {
@@ -351,20 +356,25 @@ IPBinary <- function(vector=test_ip[,'srcIP'],vec_ind=src_ind) {
 }
 ```
 
-
+We now apply the function to get our final_df
 ```{r}
 final_df<-data.table(random_sample1)
 final_df<-final_df[,c('srcIP','dstIP'):=NULL]
 
-is_ipv6 = rep(0,L)
-is_ipv6[src_ind] <- 1
-
-final_df$is_IPv6 <- is_ipv6
-
 final_df$srcIP_bin<-IPBinary()
 final_df$dstIP_bin<-IPBinary(vector=test_ip[,'dstIP'])
 
+#this column was set as character, convert to numeric for xgboost
 final_df <- final_df[,ts:=as.numeric(ts)]
 
+#we also create a column that corresponds to ipv6 observations
+is_ipv6 = rep(0,L)
+is_ipv6[src_ind] <- 1
+final_df$is_IPv6 <- is_ipv6
+
 sapply(final_df,class)
+```
+Save final dataframe.
+```{r}
+write.csv(final_df,'../data/processed/labelled_clean.csv')
 ```
