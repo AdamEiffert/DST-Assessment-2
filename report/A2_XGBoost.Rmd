@@ -1,0 +1,326 @@
+---
+title: "06-XGBoost"
+output: html_document
+---
+```{r,results='hide',message=FALSE}
+if (!require("R.utils")) install.packages("R.utils")
+library("R.utils")
+if (!require("data.table")) install.packages("data.table")
+library("data.table")
+if (!require("googledrive")) install.packages("googledrive")
+library("googledrive")
+if (!require("dplyr")) install.packages("dplyr")
+library("dplyr")
+if (!require("foreach")) install.packages("foreach")
+library(foreach)
+if (!require("doSNOW")) install.packages("doSNOW")
+library(doSNOW)
+if (!require("caret")) install.packages("caret")
+library(caret)
+if (!require("mltools")) install.packages("mltools")
+library(mltools)
+if (!require("mlr")) install.packages("mlr")
+library("mlr")
+if (!require("tidyr")) install.packages("tidyr")
+library("tidyr")
+if (!require("assertr")) install.packages("assert")
+library("assertr")
+if (!require("xgboost")) install.packages("xgboost")
+library("xgboost")
+if (!require("bit64")) install.packages("bit64")
+library("bit64")
+if (!require("PRROC")) install.packages("PRROC")
+library("PRROC")
+library(parallel)
+library(parallelMap)
+```
+
+## Loading the data
+```{r}
+df=fread('../data/processed/labelled_clean.csv')[,-1]
+head(df)
+```
+
+
+## Setting-up Training Set
+```{r}
+#pick the same random sample as we did for the baseline RF model
+set.seed(63)
+sample <- createDataPartition(df$mal, p = 0.7, list = FALSE)
+train <- df[sample,]
+test <- df[-sample,]
+
+train_features = data.table(train)
+train_features = train_features[,'malicious':=NULL]
+#xgboost function only likes matrices
+dtrain = as.matrix(train_features)
+
+
+test_features = data.table(test)
+test_features = test_features[,'malicious':=NULL]
+dtest = as.matrix(test_features)
+
+train_target = data.table(train[,'malicious'])
+train_target = as.numeric(train_target$mal)
+
+test_target = data.table(test[,'malicious'])
+test_target = as.numeric(test_target$mal)
+```
+
+Here, we encounter a problem with the xgb.DMatrix() function wherein really large ints such as our binary ints for IPv6 are seen as inf and so a `amalgamation/../src/data/data.cc:981: Check failed: valid: Input data contains 'inf' or 'nan'` x is raised.
+
+To solve this problem, we take a log-transform of the dstIP_bin and srcIP_bin columns. Though this makes the feature usable for our model, it does mean that we are likely to lose a lot of information since the log of two very large numbers (10e-32) is going to be almost identical. This was a weakness of our IP-encoding that we had not anticipated but at this point we were late in the cycle so we decide to explore how this will affect our results via inspecting feature importance later on.
+```{r}
+dtrain[,'srcIP_bin']<-log(1+dtrain[,'srcIP_bin'])
+dtrain[,'dstIP_bin']<-log(1+dtrain[,'dstIP_bin'])
+
+dtest[,'srcIP_bin']<-log(1+dtest[,'srcIP_bin'])
+dtest[,'dstIP_bin']<-log(1+dtest[,'dstIP_bin'])
+head(dtrain[,c('srcIP_bin','dstIP_bin')])
+```
+
+Now we set our xgboost matrices
+```{r}
+dtrain = xgb.DMatrix(data=dtrain, label=train_target)
+dtest = xgb.DMatrix(data=dtest, label=test_target)
+```
+
+
+## Running XGBoost
+
+#### Setting Initial Parameters
+For our problem, we are deciding between normal connections (0) and attacks (1). As these are our only two classes, we use a gradient boosting tree algorithm on a binary logistic objective for our XGBoost model.
+```{r}
+params = list(booster="gbtree", objective="binary:logistic") 
+```
+
+We run a quick 10-Fold cross validation to see what the best value for 'nrounds' is. This determines the maximum number of trees that the XGBoost model creates and is tuned to avoid over-fitting of the training data. If the model's performance has not improved over a step of 10 trees, we stop this iteration early. We print the auc results for each 10 steps of n to get a sense of how our model is improving with an increase in the number of trees.
+
+As mentioned in our introduction, our performance metric of choice will be AUC and so that is what we try to maximise in the learning step for this function.
+```{r}
+set.seed(63)
+xgbcv1 <- xgb.cv( params = params, data = dtrain, nrounds = 100, nfold = 10, showsd = T, stratified = T, print_every_n = 10, 
+                  early_stopping_rounds = 10, metrics='auc')
+```
+We can take a look at xgbcv1 to see more details of the performance for each number of nrounds for our model. We set rounds to be the nrounds that has the largest `test-auc` (which really is our val-auc as this is our validation step) metric on our cross-validation dataset. In this case, the value for n seen above is 54, which corresponds to an AUC score of 0.993109+0.001932.
+```{r}
+rounds = xgbcv1$best_iteration
+xgbcv1
+```
+
+We now fit the model with nrounds set to 54 as suggested by our CV step above.
+```{r}
+set.seed(63)
+xgb1 <- xgboost(params = params, data = dtrain, nrounds = rounds, eval_metric = "auc",verbose=0,early_stopping_rounds = 10)
+xgb1$evaluation_log[rounds]
+```
+
+Using the model trained above, we assign our predictions.
+```{r}
+set.seed(63)
+xgbpred <- predict(xgb1,dtest)
+```
+
+Our prediction above gives us 'prob' values between 0 and 1 and so we want to return 1 if binary:logistic > 0.5 and 0 otherwise. We do this below.
+```{r}
+xgbpred_fact <- ifelse (xgbpred > 0.5,1,0)
+xgbpred_fact[1:10]
+```
+
+Now we can create confusion matrix etc. to assess performance more closely.
+```{r}
+cfm_xg<-confusionMatrix(as.factor(xgbpred_fact), as.factor(test_target),positive='1')
+cfm_xg
+```
+On the face of it, the performance of our model seems high. However, look more closely and particularly at sensitivity, we see that we missed 224 out of 985 attacks and labelled them as normal. Given more time and if labelling were easier, one thing thant we would have liked to do is assess the performance of a larger set of attacks or to filter the data by attack types and see if we only perform poorly on certain attack types.
+
+
+We further plot an ROC/AUC curve to get a visual sense of our model's performance.
+```{r}
+#assign roc
+PRROC_obj <- roc.curve(scores.class0 = xgbpred, weights.class0=test$mal,curve=TRUE,)
+
+plot(PRROC_obj)
+```
+
+It seems that according to our ROC curve and AUC score, our XGBoost model performs incredibly well. However, the way that the `xgboost()` and `roc.curve()` functions are coded, the positive class is assigned to 'normal' connections. This can be seen above by the low sensitivity score in the confusion matrix when we assigned malicious connections to be the positive case.
+
+Looking back at the Random Forest ROC curve, the plot there was somehow assigned to factors rather than probability weights and so comparison using ROC/AUC is ineffective. Instead we look at the sensitivity and specificity scores given by our confusion matrix.
+
+In comparison to our baseline model, slightly tuned XGBoost does seem to outperform RandomForests but only by a small margin. The class labels for Random Forests were flipped and therefore so are the specificity and sensitivity scores but the corresponding scores are 0.757 RF_sensitivity vs 0.772 XGBoost(untuned) sensitivity, 0.99778 RF specificity vs 0.99788 for XGBoost (untuned)
+
+Although we knew this would happen, we were surprised by how slight the difference was. 
+
+  
+#### Feature Importance
+
+We now look at feature importance to get an idea of what features contributed to our predictions, but also to look back at srcIP_bin and dstIP_bin to see if our encoding and subsequent scaling methods meant that the features became somewhat uninformative.
+```{r}
+imp = xgb.importance(feature_names=colnames(train_features),model=xgb1)
+```
+
+Plotting Feature Gain
+```{r}
+xgb.plot.importance(importance_matrix = imp, measure='Gain',top_n=10)
+```
+
+Feature Gain is an important measure to look at as it allows us to get a sense of the relative contribution that a feature had for each tree in our model.The higher the gain of a feature, the higher the improvement in accuracy brought by the feature to the branches of a tree that it is on.
+
+Plotting Feature Frequency
+```{r}
+xgb.plot.importance(importance_matrix = imp, measure='Frequency',top_n=10)
+```
+
+The Frequency is related to the Gain in that it is a metric of how often the feature is used in our model to try and improve the accuracy/score of our performance metric. As we can see the top 3-5 features are roughly similar for these two importance measures.
+
+
+Plotting Feature Cover
+```{r}
+xgb.plot.importance(importance_matrix = imp, measure='Cover',top_n=10)
+```
+
+The feature Cover/Coverage corresponds to the relative number of observations that are decided by the corresponding feature. For example, a Cover of 0.25 for 'dstPort' implies that across all observations passed through all the trees, the leaf nodes split on 'dstPort' correspond to 25% of predictions as implied by this [article](https://towardsdatascience.com/be-careful-when-interpreting-your-features-importance-in-xgboost-6e16132588e7) . 
+
+However, according to [documentation](https://github.com/dmlc/xgboost/blob/f5659e17d5200bd7471a2e735177a81cb8d3012b/R-package/man/xgb.plot.tree.Rd), Cover is 'the sum of second order gradient of training data classified to the leaf, if it is square loss, this simply corresponds to the number of instances in that branch. Deeper in the tree a node is, lower this metric will be'. 
+
+Both interpretations are somewhat difficult to make sense of intuitively but the cover plot is left just to clarify the low importance of srcIP_bin and dstIP_bin among all other features.
+
+
+```{r}
+imp
+```
+
+As we see from the feature importance plots, srcIP_bin and dstIP_bin do not seem to rank significantly. This may have been due to the fact that we had to use log-scaling for XGBoost to be able to handle the binary bit values we assigned to the IP addresses, though we saw a similar lack of importance in our RandomForest model. This would indicate that either the IPs really are un-informative for our problem/selected subsample of the dataset, or that the binary encoding method that we used falls short when confronted with a mixture of IPv4 and IPv6 addresses. 
+
+
+
+
+## Hyperparmeter Tuning
+
+Here we use the mlr library's tuneParams() function to pass through a list of all the XGBoost parameters and find the best-performing combination. This should lead to an improvement in performance compared to what we did above where we only tuned the nrounds parameter. 
+
+
+
+#### Data Setup
+We need to change the setup for our data slightly as the functions we use here work with different data types than the XGBoost function used above.
+```{r}
+#scaling IP
+train[,'srcIP_bin']<-log(1+train[,'srcIP_bin'])
+train[,'dstIP_bin']<-log(1+train[,'dstIP_bin'])
+
+test[,'srcIP_bin']<-log(1+test[,'srcIP_bin'])
+test[,'dstIP_bin']<-log(1+test[,'dstIP_bin'])
+
+#changing colnames as the function does not like it when '-' is in a column name
+colnames(train)[15]<-'service'
+colnames(train)[19]<-'serviceftpdata'
+colnames(train)[37]<-'history'
+#setting to data.frame because it works more smoothly than data.table for our purposes here
+setDF(train)
+
+#repeat for test data
+colnames(test)[15]<-'service'
+colnames(test)[19]<-'serviceftpdata'
+colnames(test)[37]<-'history'
+setDF(test)
+```
+
+Below we create 'tasks' for the tuneParams(). This is explained more in the comments below.
+```{r}
+set.seed(63)
+#create tasks that specify what our model is learning
+traintask = makeClassifTask(data = train,target = 'malicious')
+testtask = makeClassifTask(data=test,target='malicious')
+
+#We set our learner to be a classification xgboost algorithm, 
+#we assign 'prob' instead of 'response' to our predict.type so that we can measure with respect to auc. 
+#We can conver these predictions to labels later as we did above
+lrn <- makeLearner("classif.xgboost",predict.type = "prob")
+#as above, we use a binary:logistic objective and use auc as our performance metric
+lrn$par.vals <- list( objective="binary:logistic", eval_metric="auc",booster="gbtree")
+
+#this is the set of parameters and the corresponding ranges for each that we wish to test.
+
+                      #max_depth corresponds to the maximum depth that each tree is allowed to go to
+params <- makeParamSet(makeIntegerParam("max_depth",lower = 6L,upper = 32L),
+                      #min_child_weight is a weight that XGBoost calculates for each leafof the tree.
+                      #if the weight is lower than min_child_weight, the tree is pruned
+                      makeIntegerParam("min_child_weight",lower = 1L,upper = 10L), 
+                      #subsample refers to the fraction of the dataset that is used when training each tree,
+                      #this is somewhat similar to bootstrapping in Random Forests
+                      makeNumericParam("subsample",lower = 0.5,upper = 1),
+                      #colsample_bytree refers to the fraction of columns/features that each tree is trained on
+                      makeNumericParam("colsample_bytree",lower = 0.5,upper = 1),
+                      #nrounds is as maximum number of trees that the model would fit, as discussed above
+                      makeIntegerParam("nrounds",lower=1L,upper=100L), 
+                      #eta is a learning rate parameter which scales the contribution of each tree
+                      makeNumericParam("eta",lower=0.01,upper=0.5))
+
+rdesc <- makeResampleDesc("CV",stratify = T,iters=5L)
+
+ctrl <- makeTuneControlRandom(maxit = 10L)
+```
+
+
+```{r}
+#setting parallel backend for faster computation
+parallelStartSocket(cpus = detectCores())
+
+#tune our parameters
+set.seed(63)
+mytune <- tuneParams(learner = lrn, task = traintask, resampling = rdesc, measures = auc, par.set = params, control = ctrl, show.info = T)
+```
+
+We take a brief look at the AUC score, which seems to be in a similar region to what we had before.
+```{r}
+mytune$y 
+```
+
+Having tuned parameters, this is the set of values that our model seems to perform best with.
+```{r}
+mytune$x
+```
+
+Using the above parameters, we use our model to perform prediction on our test dataset.
+```{r}
+set.seed(63)
+lrn_tune <- setHyperPars(lrn,par.vals = mytune$x)
+xgmodel <- train(learner = lrn_tune,task = traintask)
+
+xgpred <- predict(xgmodel,testtask)
+```
+
+
+We start again by looking at the confusion matrix.
+```{r}
+confusionMatrix(xgpred$data$response,xgpred$data$truth,positive='TRUE')
+```
+*Note: on the various runthroughs carried out initially, the results always improved after tuning. However, this seems to have suddenly changed for some reason, despite consistently setting seeds.*
+
+**Old results:** We see that our performance does improve but not significantly. We were mostly hoping that we would get better at predicting attacks given the hyperparameter tuning, however, our sensitivity only went up from 0.76954 to 0.77462. 
+
+**Current results:** It seems that the performance has somehow dropped after performing hyperparameter tuning. Our previous sensitivity score decreased from 0.7729 to 0.7715, whereas specificity decreased from 0.99788 to 0.99749. 
+
+Again, it is unclear how significant these changes are given the relatively small number of attacks present in our subsample of the dataset but it would be interesting to see if there would be a larger difference upon varying the test-size. We would've liked to explore this across our XGBoost and Random Forest models but given time constraints and how long it took Random Forests to run, we decided to leave this unexplored. 
+
+
+We plot ROC/AUC just for completeness though there are no significant comments to be made; the values are near identical.
+```{r}
+PRROC_obj1 <- roc.curve(scores.class0 = xgpred$data$prob.TRUE, weights.class0=test$mal,curve=TRUE)
+
+plot(PRROC_obj)
+```
+
+Again, we only see the slightest improvement in performance with AUC increasing from 0.883 to 0.886 after tuning the parameters.
+
+
+
+## Conclusion and Retrospection
+
+In the end, we see very little difference between the XGBoost and Random Forest performance. XGBoost with only nrounds tuned gave a mild performance increase but we hoped that once we tuned the hyperparameters for our XGBoost model that this difference would become larger or at the very least that our XGBoost would become better at detecting attacks. However, this difference was also minimal and though it did result in performance improvement initially, future runthroughs caused different results to emerge and tuning the parameters ended up decreasing performance. We did attempt to control randomness to some extent by training all our models on the same subsample of our labelled dataset but due to the nature of bootstrapping, some randomness will always be present and therefore it is unclear whether the slight improvements in XGBoost(tuned) vs. XGBoost(untuned) vs. RandomForest(untuned) are somewhat 'significant' or purely due to randomness, though due to the small magnitude of improvement, the latter may be likely. The discrepancy between tuned and untuned XGBoost being negligible is possibly unsurprising as the model is meant to not be sensitive to its parameters but a performance decrease is nevertheless unexpected and we are unsure how to interpret such a result, though further exploration such as with varying training:testing ratio may or may not shed some light on this.
+
+It is worth mentioning, however, that even though our baseline model performed very similarly to our main model, Random Forests took roughly 2 hours to run while xGBoost took 15-20 minutes. Though this may not be a statistical performance metric, it is largely desirable in practice especially when running the models on larger datasets (the original conn.log was roughly 100x this subsample) as this would significantly reduce run-time and costs.
+
+Given time constraints, the fact that we had to run our models on separate machines due to the time Random Forests took to run, and the time it took overall to get a labelled dataset, we did not explore a few ideas that we had in mind. We initially planned to run our models on increasing size of training set (10,20,30,...,70%) of the data, and see if the performance changed significantly for each model. The slow running of Random Forests made this infeasible. It would maybe have been more apt for comparison's sake to compare multiple models rather than a baseline vs. main model especially since Random Forests and XGBoost performed much more similarly than we had though. 
+
+We did come across multiple issues that could have affected our model performance. Namely, while the method we used to encode IP addresses was based on results from a paper comparing different IP-encoding methods, it may be the case that their best performing encoding is not applicable to our dataset. Specifically, because we had IPv6 and IPv4 addresses, while the research paper only had IPv4, this could have caused some issues/inconsistencies. This was made worse when the XGBoost function in R struggled to work with our binary-bit encoding and mistook them for 'inf' types which meant we had to use feature scaling and likely lost a lot of information as a result. Given more time, it would have been interesting to explore the different methods used in the paper and see if they delivered any significant performance improvements or not for our dataset, but the time constraints did not allow for this.
