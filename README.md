@@ -21,7 +21,7 @@ The report takes the following structure:
 * 03-labelling conn log.Rmd
 * 04-Model Formatting.Rmd 
 * 05-Baseline.Rmd
-* 06-
+* 06-Main Model (XGBoost)
 
 ### Requirements:
 
