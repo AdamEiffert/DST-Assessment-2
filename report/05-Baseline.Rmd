@@ -22,6 +22,8 @@ if (!require("PRROC")) install.packages("PRROC")
 library("PRROC")
 if (!require("bit64")) install.packages("bit64")
 library("bit64")
+if (!require("InformationValue")) install.packages("InformationValue")
+library("InformationValue")
 ```
 In case the previous code from the project has not been run, we have linked to a Google drive document to train the model.
 ```{r}
@@ -47,13 +49,8 @@ prediction <- predict(model,test[,-'malicious'])
 prediction[prediction < 0.5] = 0
 prediction[prediction > 0.5] = 1
 ```
-
-Here we can look at the ROC curve produced by the model as well as the area under the curve. This allows us to numerically compare the models as well as graphically to see if there are any unusual findings between the two models. We also export the plot so that it can be used in 06-complex for comparison to the complex model.
-
-```{r}
-png('../data/processed/RF_ROC.png')
-PRROC_obj <- roc.curve(scores.class0 = prediction, weights.class0=test$malicious,curve=TRUE)
-plot(PRROC_obj)
-dev.off()
-plot(PRROC_obj)
+Here we look at the specificity and the sensitivity of the predictions. We will compare these values to the complex model in 06-complex.
+```{R}
+specificity(test$malicious,prediction)
+sensitivity(test$malicious,prediction)
 ```
